@@ -1,0 +1,279 @@
+---
+- name: Install Djezzy WorkPlace
+  hosts: localhost
+  connection: local
+  become: yes
+  tasks:
+
+    - name: Update the package index
+      apt:
+        update_cache: yes
+
+    - name: Upgrade all packages to the latest version
+      apt:
+        upgrade: dist
+        autoclean: yes
+        autoremove: yes
+
+    - name: Install MariaDB server
+      package:
+        name: mariadb-server
+        state: present
+
+    - name: Install Python
+      apt:
+        name: python3
+        state: present
+
+    - name: Install pip3
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install PyMySQL using pip3
+      pip:
+        name: PyMySQL
+        state: present
+        executable: pip3
+
+    - name: Secure MariaDB installation (set root password)
+      mysql_user:
+        name: root
+        password: Hichem2024
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        check_implicit_admin: yes
+        host_all: yes
+
+    - name: Create database for Nextcloud
+      mysql_db:
+        name: nextcloud
+        state: present
+        login_user: root
+        login_password: Hichem2024
+
+    - name: Create MySQL user for Nextcloud
+      mysql_user:
+        name: nextcloud_user
+        password: hichem2024
+        priv: 'nextcloud.*:ALL'
+        host: localhost
+        state: present
+        login_user: root
+        login_password: Hichem2024
+
+    - name: Flush privileges
+      mysql_query:
+        query: FLUSH PRIVILEGES
+        login_user: root
+        login_password: Hichem2024
+
+    - name: Add PPA for PHP
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+
+    - name: Install required packages
+      apt:
+        name:
+          - apache2
+          - php8.3
+          - libapache2-mod-php8.3
+          - php8.3-mysql
+          - php8.3-xml
+          - php8.3-mbstring
+          - php8.3-curl
+          - php8.3-zip
+          - php8.3-gd
+          - php8.3-intl
+          - php8.3-bcmath
+          - php8.3-gmp
+          - wget
+          - unzip
+          - git
+          - make
+          - python3-pymysql
+        state: present
+
+    - name: Download Nextcloud 29.0.3
+      get_url:
+        url: https://download.nextcloud.com/server/releases/nextcloud-29.0.3.zip
+        dest: /tmp/nextcloud-29.0.3.zip
+
+    - name: Unzip Nextcloud
+      unarchive:
+        src: /tmp/nextcloud-29.0.3.zip
+        dest: /var/www/
+        remote_src: yes
+
+    - name: Set correct permissions on Nextcloud directory
+      file:
+        path: /var/www/nextcloud
+        state: directory
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Create Apache configuration for Nextcloud
+      copy:
+        dest: /etc/apache2/sites-available/nextcloud.conf
+        content: |
+          <VirtualHost *:80>
+            DocumentRoot /var/www/nextcloud
+            ServerName localhost
+
+            <Directory /var/www/nextcloud/>
+              Options +FollowSymlinks
+              AllowOverride All
+              <IfModule mod_dav.c>
+                Dav off
+              </IfModule>
+              <IfModule mod_headers.c>
+                Header always set Strict-Transport-Security "max-age=15552000; includeSubDomains"
+              </IfModule>
+              SetEnv HOME /var/www/nextcloud
+              SetEnv HTTP_HOME /var/www/nextcloud
+            </Directory>
+
+            ErrorLog ${APACHE_LOG_DIR}/error.log
+            CustomLog ${APACHE_LOG_DIR}/access.log combined
+          </VirtualHost>
+
+    - name: Enable Nextcloud site
+      command: a2ensite nextcloud.conf
+
+    - name: Disable Apache Local config
+      command: a2dissite 000-default
+
+    - name: Enable rewrite module
+      command: a2enmod rewrite
+      notify:
+        - Restart Apache
+
+    - name: Enable headers module
+      command: a2enmod headers
+      notify:
+        - Restart Apache
+
+    - name: Create admin account for Nextcloud
+      shell: |
+        sudo -u www-data /bin/php /var/www/nextcloud/occ \
+          maintenance:install \
+          --database "mysql" \
+          --database-name "nextcloud" \
+          --database-host "localhost" \
+          --database-user "nextcloud_user" \
+          --database-pass "hichem2024" \
+          --admin-user "admin" \
+          --admin-pass "admin_password"
+      args:
+        executable: /bin/bash
+
+    - name: Set PHP memory limit to 512M
+      become: yes
+      lineinfile:
+        path: /etc/php/8.3/apache2/php.ini
+        regexp: '^memory_limit = '
+        line: 'memory_limit = 512M'
+      notify:
+        - Restart Apache
+
+    - name: Install mail APP
+      shell: sudo -u www-data /bin/php /var/www/nextcloud/occ app:install mail
+      args:
+        executable: /bin/bash
+
+    - name: Enable mail APP
+      shell: sudo -u www-data /bin/php /var/www/nextcloud/occ app:enable mail
+      args:
+        executable: /bin/bash
+
+    - name: Add Node.js repository
+      shell: curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+
+    - name: Install Yarn
+      npm:
+        name: yarn
+        global: yes
+
+    - name: Clone repository
+      git:
+        repo: https://github.com/sualko/cloud_bbb.git
+        dest: /var/www/nextcloud/apps/bbb
+        depth: 1   # Optional: limits the git history cloned to improve performance
+
+    - name: Build the project
+      command: make build
+      args:
+        chdir: /var/www/nextcloud/apps/bbb
+
+    - name: Install Redis and PHP Redis
+      become: yes
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - redis-server
+        - php-redis
+      notify:
+        - Restart Apache
+
+    - name: Ensure the Redis configuration line for memcache.local is present
+      lineinfile:
+        path: /var/www/nextcloud/config/config.php
+        insertbefore: "^  'passwordsalt' =>"
+        line: "  'memcache.local' => '\\\\OC\\\\Memcache\\\\Redis',"
+        state: present
+      notify:
+        - Restart Apache
+
+    - name: Ensure the Redis configuration line for memcache.locking is present
+      lineinfile:
+        path: /var/www/nextcloud/config/config.php
+        insertbefore: "^  'passwordsalt' =>"
+        line: "  'memcache.locking' => '\\\\OC\\\\Memcache\\\\Redis',"
+        state: present
+      notify:
+        - Restart Apache
+
+    - name: Add missing indexes to Nextcloud database
+      shell: "sudo -u www-data /bin/php /var/www/nextcloud/occ db:add-missing-indices"
+      args:
+        executable: /bin/bash
+
+    - name: Adjust maintenance windows start
+      shell: "sudo -u www-data /bin/php /var/www/nextcloud/occ config:system:set maintenance_window_start --type=integer --value=1"
+      args:
+        executable : /bin/bash
+
+    - name: Add Nextcloud cron job
+      shell: >
+        crontab -u www-data -l | grep -v -F "php -f /var/www/nextcloud/cron.php" | { cat; echo "*/5 * * * * php -f /var/www/nextcloud/cron.php"; } | crontab -u www-data -
+      args:
+        executable: /bin/bash
+
+    - name: Set the logo
+      shell: sudo -u www-data /bin/php /var/www/nextcloud/occ theming:config logo /tmp/logo.png
+      args:
+        executable: /bin/bash
+
+    - name: Disable the Image background
+      shell: sudo -u www-data /bin/php /var/www/nextcloud/occ theming:config background backgroundColor
+      args:
+        executable: /bin/bash
+
+    - name: Set the theme color
+      shell: sudo -u www-data /bin/php /var/www/nextcloud/occ theming:config color "#C90000"
+      args:
+        executable: /bin/bash
+
+  handlers:
+    - name: Restart Apache
+      become: yes
+      service:
+        name: apache2
+        state: restarted
