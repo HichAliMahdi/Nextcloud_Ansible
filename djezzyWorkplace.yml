@@ -203,13 +203,13 @@
     - name: Clone repository
       git:
         repo: https://github.com/sualko/cloud_bbb.git
-        dest: /var/www/nextcloud/apps/bbb
+        dest: /path/to/nextcloud/apps/bbb
         depth: 1   # Optional: limits the git history cloned to improve performance
 
     - name: Build the project
       command: make build
       args:
-        chdir: /var/www/nextcloud/apps/bbb
+        chdir: /path/to/nextcloud/apps/bbb
 
     - name: Install Redis and PHP Redis
       become: yes
